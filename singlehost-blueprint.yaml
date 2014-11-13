@@ -81,6 +81,7 @@ node_templates:
       cloudify_agent:
         user: { get_input: agent_user }
         key: { get_input: agent_private_key_path }
+        home_dir: /home/ubuntu
 
   mongod:
     type: mongo_database

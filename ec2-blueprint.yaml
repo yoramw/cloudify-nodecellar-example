@@ -11,6 +11,7 @@ node_types:
       cloudify_agent:
         default:
           user: ubuntu
+          home_dir: /home/ubuntu
       server:
         default:
           image_name: ami-a73264ce

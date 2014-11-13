@@ -11,6 +11,7 @@ node_types:
       cloudify_agent:
         default:
           user: ubuntu
+          home_dir: /home/ubuntu
       server:
         default:
           ### if defined, will serve as the hostname for the started instance,
