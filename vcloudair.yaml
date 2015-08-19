@@ -1,0 +1,220 @@
+###########################################################
+# This Blueprint installs the nodecellar application
+# on an vcloud cloud environment.
+###########################################################
+
+tosca_definitions_version: cloudify_dsl_1_0
+
+imports:
+  - http://s3.amazonaws.com/vcloud-score/types.yaml
+  - https://raw.githubusercontent.com/cloudify-cosmo/tosca-vcloud-plugin/1.2.1m2/plugin.yaml
+  - http://s3.amazonaws.com/vcloud-score/cloudify-fabric-plugin/1.2/plugin.yaml
+  - types/nodecellar.yaml
+
+
+#####################################################################################
+# inputs section allows the user to use same
+# blueprint for creating different deployments, each one
+# with its own parameters.
+# to specify deployment inputs run:
+#   - cfy deployments create -b <blueprint_id> -d <deployment_id> -i inputs.json
+#####################################################################################
+
+inputs:
+
+  catalog:
+    description: >
+      The vCloud catalog
+    default: ''
+
+  template:
+    description: >
+      The vCloud template
+    default: ''
+
+  management_network_name:
+    description: >
+      Name of the network that will be used for Cloudify management
+    type: string    
+
+  gateway_name:
+    description: >
+      The edge gateway ID    
+    type: string
+  public_ip:
+      type: string
+  ssh_user:
+    type: string
+    default: ubuntu
+  auto_generate_ssh_keys:
+    type: boolean
+  vcloud_url:
+    type: string
+  vcloud_service_type:
+    type: string
+  vcloud_api_version:
+    type: string
+  vcloud_vdc:
+    type: string
+  vcloud_instance:
+    type: string
+
+node_types:
+  vcloud_configuration:
+    type: vcloud_configuration
+      properties:
+        vcloud_config:
+          url: { get_input: vcloud_url }
+            instance: { get_input: vcloud_instance }
+            vdc: { get_input: vcloud_vdc }
+            org: { get_input: vcloud_vdc }
+            service_type: { get_input: vcloud_service_type }
+            api_version: { get_input: vcloud_api_version }
+
+node_templates:
+
+  ssh_keypair:
+    type: cloudify.vcloud.nodes.KeyPair
+    properties:
+      auto_generate: { get_input: auto_generate_ssh_keys }
+      public_key:
+        user: { get_input: ssh_user }
+
+  mongod_host:
+    type: cloudify.vcloud.nodes.Server
+    relationships:
+      - target: mongo_management_port
+        type: cloudify.vcloud.server_connected_to_port
+    relationships:
+
+      ###########################################################
+      # Attaching a NAT rule the mongo host for ssh only
+      ###########################################################
+      - target: ssh_access_only
+        type: cloudify.vcloud.server_connected_to_public_nat
+      - target: ssh_keypair
+        type: cloudify.vcloud.server_connected_to_keypair
+
+  nodejs_host:
+    type: cloudify.vcloud.nodes.Server
+    relationships:
+
+      ###########################################################
+      # Attaching a floating ip to the nodejs host
+      ###########################################################
+      - target: example_public_ip
+        type: cloudify.vcloud.server_connected_to_public_nat
+      - target: nodecellar_management_port
+        type: cloudify.vcloud.server_connected_to_port
+      - target: ssh_keypair
+        type: cloudify.vcloud.server_connected_to_keypair
+
+
+  mongo_ganagement_port:
+    type: cloudify.vcloud.nodes.Port
+    properties:
+      port:
+        network: { get_input: management_network_name }
+        ip_allocation_mode: dhcp
+        primary_interface: true
+
+  nodecellar_management_port:
+    type: cloudify.vcloud.nodes.Port
+    properties:
+      port:
+        network: { get_input: management_network_name }
+        ip_allocation_mode: dhcp
+        primary_interface: true
+
+  mongod:
+    type: nodecellar.nodes.MongoDatabase
+    properties:
+      port: 27017
+    interfaces:
+      cloudify.interfaces.lifecycle:
+
+        ###########################################################
+        # The MongoDBCollector depends on a python library called
+        # pymongo. We install this library in the 'configure'
+        # lifecycle hook of this node.
+        ###########################################################
+
+        configure: scripts/mongo/install-pymongo.sh
+
+    relationships:
+      - type: cloudify.relationships.contained_in
+        target: mongod_host
+
+  nodejs:
+    type: nodecellar.nodes.NodeJSServer
+    relationships:
+      - type: cloudify.relationships.contained_in
+        target: nodejs_host
+
+  nodecellar:
+    type: nodecellar.nodes.NodecellarApplicationModule
+    properties:
+      port: 8080
+    relationships:
+
+      ################################
+      # Setting the mongo connection
+      ################################
+
+      - type: node_connected_to_mongo
+        target: mongod
+
+      ################################
+      # Setting the nodejs connection
+      ################################
+
+      - type: node_contained_in_nodejs
+        target: nodejs
+
+  ###########################################################
+  # A floating ip to be attached to the nodejs host, since
+  # eventually we want to be able to access it
+  # from any machine, on any network.
+  ###########################################################
+
+    example_public_ip:
+      type: cloudify.vcloud.nodes.PublicNAT
+      properties:
+        nat:
+          edge_gateway: { get_input: gateway_name }
+            public_ip: { get_input: public_ip }
+        rules:
+          - type: SNAT
+          - type: DNAT
+            protocol: tcp
+            original_port: 22
+            translated_port: 22
+          - type: DNAT
+            protocol: tcp
+            original_port: 80
+            translated_port: 80
+
+    ssh_access_only:
+      type: cloudify.vcloud.nodes.PublicNAT
+      properties:
+        nat:
+          edge_gateway: { get_input: gateway_name }
+            public_ip: { get_input: public_ip }
+        rules:
+          - type: DNAT
+            protocol: tcp
+            original_port: 22
+            translated_port: 22
+
+###########################################################
+# This outputs section exposes the application endpoint.
+# You can access it by running:
+#   - cfy deployments -d <deployment_id> outputs
+###########################################################
+
+outputs:
+  endpoint:
+    description: Web application endpoint
+    value:
+      ip_address: { get_attribute: [ example_public_ip, public_ip ] }
+      port: { get_property: [ nodecellar, port ] }
